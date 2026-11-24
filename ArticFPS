@@ -1,0 +1,344 @@
+	_G.fps_Settings = {
+		Booster    = true,   -- false = desliga TODAS as otimizacoes (so o contador, se ativo)
+		FPSCounter = true,   -- false = sem contador de FPS
+		Graphics   = true,   -- QualityLevel / mesh detail / interpolation
+		Lighting   = true,   -- sombras, fog, atmosfera, post-effects
+		Texture    = true,   -- materiais, SurfaceAppearance, decals, sky
+		Terrain    = true,   -- agua, decoration, nuvens
+		Meshes     = true,   -- RenderFidelity = Performance
+		Effects    = true,  -- particulas, trails, beams, luzes (pode esconder feedback de jogo)
+		Aggressive = true,  -- destroi Decals e limpa TextureID de MeshParts (irreversivel)
+	}
+]]
+
+if _G.__FPSBoosterLoaded then return end
+_G.__FPSBoosterLoaded = true
+
+--> Settings (merge com padroes)
+local Defaults = {
+	Booster = true,
+	FPSCounter = true,
+	Graphics = true,
+	Lighting = true,
+	Texture = true,
+	Terrain = true,
+	Meshes = true,
+	Effects = true,
+	Aggressive = true,
+}
+
+local Settings = table.clone(Defaults)
+if type(_G.fps_Settings) == "table" then
+	for key, value in pairs(_G.fps_Settings) do
+		if Defaults[key] ~= nil then
+			Settings[key] = value
+		end
+	end
+end
+
+--> Services
+local Players = game:GetService("Players")
+local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local Player = Players.LocalPlayer
+local Terrain = workspace:FindFirstChildOfClass("Terrain")
+local sethiddenproperty = sethiddenproperty or set_hidden_property or set_hidden_prop
+
+--> Orcamento de tempo por frame (menor no mobile)
+local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local BUDGET = IsMobile and 0.0015 or 0.003
+
+--> Helpers
+local function setHidden(instance, property, value)
+	if sethiddenproperty then
+		pcall(sethiddenproperty, instance, property, value)
+	end
+end
+
+local function isMine(object)
+	local character = Player and Player.Character
+	return character ~= nil and object:IsDescendantOf(character)
+end
+
+--> Contador de FPS (opcional, leve: 1 conexao, texto atualizado 1x por segundo)
+local function startCounter()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "FPSCounter"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 999999
+
+	local label = Instance.new("TextLabel")
+	label.AnchorPoint = Vector2.new(1, 0)
+	label.Position = UDim2.new(1, -8, 0, 4)
+	label.Size = UDim2.fromOffset(100, 24)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextStrokeTransparency = 0.5
+	label.Font = Enum.Font.SourceSansBold
+	label.TextSize = 18
+	label.TextXAlignment = Enum.TextXAlignment.Right
+	label.Text = "FPS: --"
+	label.Parent = gui
+
+	local mounted = pcall(function()
+		gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
+	end)
+	if not mounted then
+		local playerGui = Player and Player:FindFirstChildOfClass("PlayerGui")
+		if not playerGui then
+			gui:Destroy()
+			return
+		end
+		gui.Parent = playerGui
+	end
+
+	local frames, last, shown = 0, os.clock(), -1
+	RunService.Heartbeat:Connect(function()
+		frames = frames + 1
+		local now = os.clock()
+		local elapsed = now - last
+		if elapsed >= 1 then
+			local fps = math.floor(frames / elapsed + 0.5)
+			if fps ~= shown then
+				shown = fps
+				label.Text = "FPS: " .. fps
+			end
+			frames = 0
+			last = now
+		end
+	end)
+end
+
+if Settings.FPSCounter then
+	startCounter()
+end
+
+if not Settings.Booster then
+	return
+end
+
+--> Configuracoes globais (rodam uma unica vez)
+if Settings.Graphics then
+	pcall(function()
+		local Rendering = settings().Rendering
+		Rendering.QualityLevel = Enum.QualityLevel.Level01
+		Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01
+	end)
+	pcall(function()
+		workspace.InterpolationThrottling = Enum.InterpolationThrottlingMode.Enabled
+	end)
+end
+
+if Settings.Lighting then
+	pcall(function()
+		Lighting.GlobalShadows = false
+		Lighting.FogEnd = 1e9
+		Lighting.EnvironmentDiffuseScale = 0
+		Lighting.EnvironmentSpecularScale = 0
+		Lighting.ShadowSoftness = 0
+	end)
+	setHidden(Lighting, "Technology", Enum.Technology.Compatibility)
+end
+
+if Settings.Terrain and Terrain then
+	pcall(function()
+		Terrain.WaterWaveSize = 0
+		Terrain.WaterWaveSpeed = 0
+		Terrain.WaterReflectance = 0
+		Terrain.WaterTransparency = 0
+	end)
+	if not pcall(function() Terrain.Decoration = false end) then
+		setHidden(Terrain, "Decoration", false)
+	end
+end
+
+--> Handlers por ClassName (lookup O(1) em vez de cadeia de IsA)
+local SmoothPlastic = Enum.Material.SmoothPlastic
+local Performance = Enum.RenderFidelity.Performance
+local KeepMaterial = {
+	[Enum.Material.Neon] = true,
+	[Enum.Material.Glass] = true,
+	[Enum.Material.ForceField] = true,
+}
+
+local function shade(part)
+	if Settings.Texture then
+		local material = part.Material
+		if material ~= SmoothPlastic and not KeepMaterial[material] then
+			part.Material = SmoothPlastic
+		end
+		if part.Reflectance ~= 0 then
+			part.Reflectance = 0
+		end
+		if part.MaterialVariant ~= "" then
+			part.MaterialVariant = ""
+		end
+	end
+end
+
+local function onPart(part)
+	if not isMine(part) then
+		shade(part)
+	end
+end
+
+local function onMesh(part)
+	if isMine(part) then
+		return
+	end
+	shade(part)
+	if Settings.Meshes and part.RenderFidelity ~= Performance then
+		part.RenderFidelity = Performance
+	end
+	if Settings.Aggressive and part.ClassName == "MeshPart" and part.TextureID ~= "" then
+		part.TextureID = ""
+	end
+end
+
+local function onDecal(decal)
+	local parent = decal.Parent
+	if parent and parent.Name == "Head" then
+		return -- preserva rostos
+	end
+	if Settings.Aggressive then
+		decal:Destroy()
+	elseif decal.Transparency ~= 1 then
+		decal.Transparency = 1
+	end
+end
+
+local function onSurfaceAppearance(object) object:Destroy() end
+
+local function onSky(sky)
+	sky.StarCount = 0
+	sky.CelestialBodiesShown = false
+end
+
+local function onAtmosphere(atmosphere)
+	atmosphere.Density = 0
+	atmosphere.Offset = 0
+	atmosphere.Glare = 0
+	atmosphere.Haze = 0
+end
+
+local function disable(object)
+	if object.Enabled then
+		object.Enabled = false
+	end
+end
+
+local function hideExplosion(explosion)
+	explosion.Visible = false
+end
+
+local Handlers = {}
+
+if Settings.Texture then
+	for _, className in ipairs({
+		"Part", "WedgePart", "CornerWedgePart", "TrussPart",
+		"Seat", "VehicleSeat", "SpawnLocation",
+	}) do
+		Handlers[className] = onPart
+	end
+	Handlers.SurfaceAppearance = onSurfaceAppearance
+	Handlers.Decal = onDecal
+	Handlers.Texture = onDecal
+	Handlers.Sky = onSky
+end
+
+if Settings.Texture or Settings.Meshes then
+	Handlers.MeshPart = onMesh
+	Handlers.UnionOperation = onMesh
+end
+
+if Settings.Lighting then
+	Handlers.Atmosphere = onAtmosphere
+	Handlers.BloomEffect = disable
+	Handlers.BlurEffect = disable
+	Handlers.DepthOfFieldEffect = disable
+	Handlers.SunRaysEffect = disable
+	-- ColorCorrectionEffect e barato e altera muito as cores: mantido ligado.
+end
+
+if Settings.Terrain then
+	Handlers.Clouds = disable
+end
+
+if Settings.Effects then
+	for _, className in ipairs({
+		"ParticleEmitter", "Trail", "Beam", "Fire", "Smoke", "Sparkles",
+		"Highlight", "PointLight", "SpotLight", "SurfaceLight",
+	}) do
+		Handlers[className] = disable
+	end
+	Handlers.Explosion = hideExplosion
+end
+
+--> Fila para objetos novos (processados em lote, dentro do orcamento)
+local queue, head, tail = {}, 1, 0
+local running = false
+
+local function pump()
+	if running then
+		return
+	end
+	running = true
+	task.defer(function()
+		while head <= tail do
+			local started = os.clock()
+			while head <= tail and os.clock() - started < BUDGET do
+				local object = queue[head]
+				queue[head] = nil
+				head = head + 1
+				if object.Parent then
+					local handler = Handlers[object.ClassName]
+					if handler then
+						pcall(handler, object)
+					end
+				end
+			end
+			if head <= tail then
+				RunService.Heartbeat:Wait()
+			end
+		end
+		head, tail = 1, 0
+		running = false
+	end)
+end
+
+local function onAdded(object)
+	if Handlers[object.ClassName] then
+		tail = tail + 1
+		queue[tail] = object
+		pump()
+	end
+end
+
+--> Varredura inicial (somente workspace e Lighting, fatiada por tempo)
+local function scan(root)
+	local list = root:GetDescendants()
+	local started = os.clock()
+	for index = 1, #list do
+		local object = list[index]
+		local handler = Handlers[object.ClassName]
+		if handler then
+			pcall(handler, object)
+		end
+		if index % 200 == 0 and os.clock() - started > BUDGET then
+			RunService.Heartbeat:Wait()
+			started = os.clock()
+		end
+	end
+end
+
+-- Conecta antes de varrer para nao perder objetos criados durante a varredura
+workspace.DescendantAdded:Connect(onAdded)
+Lighting.DescendantAdded:Connect(onAdded)
+
+task.spawn(function()
+	scan(Lighting)
+	scan(workspace)
+end)
